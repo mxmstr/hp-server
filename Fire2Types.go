@@ -38,3 +38,8 @@ type Variable struct {
 	Field string
 	Value interface{}
 } // also used for GENERIC
+
+type Encoder struct {
+	header Header
+	stack  []map[string]interface{} // stack[0] = root payload; top = current open struct
+}

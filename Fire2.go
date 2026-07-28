@@ -136,3 +136,10 @@ func Fire2Decoder(buffer []byte, debugLog bool) *Packet {
 		Error:    blazeErr,
 	}
 }
+
+func Fire2Encoder(component, command uint16, msgType uint8) *Encoder {
+	return &Encoder{
+		header: Header{ComponentID: component, CommandID: command, MessageType: msgType},
+		stack:  []map[string]interface{}{{}}, // root payload
+	}
+}
