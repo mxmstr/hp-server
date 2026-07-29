@@ -19,6 +19,28 @@ func (e *Encoder) Float(tag string, v float32) *Encoder { e.top()[tag] = v; retu
 func (e *Encoder) MsgNum(n uint32) *Encoder             { e.header.MessageNumber = n; return e }
 func (e *Encoder) UserIndex(i uint8) *Encoder           { e.header.UserIndex = i; return e }
 
+func (e *Encoder) ObjectType(tag string, component, typ uint16) *Encoder {
+	e.top()[tag] = ObjectType{Component: component, Type: typ}
+	return e
+}
+
+func (e *Encoder) ObjectID(tag string, component, typ uint16, id int64) *Encoder {
+	e.top()[tag] = ObjectID{Component: component, Type: typ, ID: id}
+	return e
+}
+
+func (e *Encoder) Union(tag string, activeMember uint8, field string, value interface{}) *Encoder {
+	e.top()[tag] = Union{ActiveMember: activeMember, Field: field, Value: value}
+	return e
+}
+
+func (e *Encoder) Variable(tag string, tdfID uint32, field string, value interface{}) *Encoder {
+	e.top()[tag] = Variable{TdfID: tdfID, Field: field, Value: value}
+	return e
+}
+
+func (e *Encoder) Raw(tag string, v interface{}) *Encoder { e.top()[tag] = v; return e }
+
 func (e *Encoder) BeginStruct(tag string) *Encoder {
 	child := map[string]interface{}{}
 	e.top()[tag] = child             // attach to parent now (it's a reference)
