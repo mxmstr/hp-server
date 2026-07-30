@@ -11,13 +11,13 @@ func (e *Encoder) Build() []byte {
 	return EncodePacket(&Packet{Header: e.header, Payload: e.stack[0]})
 }
 
-func (e *Encoder) Integer(tag string, v int64) *Encoder { e.top()[tag] = v; return e }
-func (e *Encoder) String(tag, v string) *Encoder        { e.top()[tag] = v; return e }
-func (e *Encoder) Bool(tag string, v bool) *Encoder     { e.top()[tag] = v; return e }
-func (e *Encoder) Blob(tag string, v []byte) *Encoder   { e.top()[tag] = v; return e }
-func (e *Encoder) Float(tag string, v float32) *Encoder { e.top()[tag] = v; return e }
-func (e *Encoder) MsgNum(n uint32) *Encoder             { e.header.MessageNumber = n; return e }
-func (e *Encoder) UserIndex(i uint8) *Encoder           { e.header.UserIndex = i; return e }
+func (e *Encoder) Integer(tag string, value int64) *Encoder { e.top()[tag] = value; return e }
+func (e *Encoder) String(tag, value string) *Encoder        { e.top()[tag] = value; return e }
+func (e *Encoder) Bool(tag string, value bool) *Encoder     { e.top()[tag] = value; return e }
+func (e *Encoder) Blob(tag string, value []byte) *Encoder   { e.top()[tag] = value; return e }
+func (e *Encoder) Float(tag string, value float32) *Encoder { e.top()[tag] = value; return e }
+func (e *Encoder) MsgNum(msgNum uint32) *Encoder            { e.header.MessageNumber = msgNum; return e }
+func (e *Encoder) UserIndex(userIndex uint8) *Encoder       { e.header.UserIndex = userIndex; return e }
 
 func (e *Encoder) ObjectType(tag string, component, typ uint16) *Encoder {
 	e.top()[tag] = ObjectType{Component: component, Type: typ}
@@ -39,7 +39,7 @@ func (e *Encoder) Variable(tag string, tdfID uint32, field string, value interfa
 	return e
 }
 
-func (e *Encoder) Raw(tag string, v interface{}) *Encoder { e.top()[tag] = v; return e }
+func (e *Encoder) Raw(tag string, value interface{}) *Encoder { e.top()[tag] = value; return e }
 
 func (e *Encoder) BeginStruct(tag string) *Encoder {
 	child := map[string]interface{}{}
@@ -57,28 +57,28 @@ func (e *Encoder) EndStruct() *Encoder {
 
 func (e *Encoder) List(tag string, elemType byte, elems ...interface{}) *Encoder {
 	out := make([]interface{}, len(elems))
-	for i, el := range elems {
-		out[i] = coerce(elemType, el)
+	for i, elem := range elems {
+		out[i] = coerce(elemType, elem)
 	}
 	e.top()[tag] = out
 	return e
 }
 func (e *Encoder) Map(tag string, keyType, valType byte, entries [][2]interface{}) *Encoder {
-	m := make(map[interface{}]interface{}, len(entries))
-	for _, kv := range entries {
-		m[coerce(keyType, kv[0])] = coerce(valType, kv[1])
+	outMap := make(map[interface{}]interface{}, len(entries))
+	for _, entry := range entries {
+		outMap[coerce(keyType, entry[0])] = coerce(valType, entry[1])
 	}
-	e.top()[tag] = m
+	e.top()[tag] = outMap
 	return e
 }
 
-func encodeStruct(m map[string]interface{}, root bool) []byte {
+func encodeStruct(fields map[string]interface{}, root bool) []byte {
 	var out []byte
-	for _, tag := range sortedKeys(m) {
-		if isEmptyCollection(m[tag]) {
+	for _, tag := range sortedKeys(fields) {
+		if isEmptyCollection(fields[tag]) {
 			continue
 		} // EA omits empties
-		typ, body := encodeValue(m[tag])
+		typ, body := encodeValue(fields[tag])
 		out = append(out, encodeTag(tag)...)
 		out = append(out, typ)
 		out = append(out, body...)
@@ -89,8 +89,8 @@ func encodeStruct(m map[string]interface{}, root bool) []byte {
 	return out
 }
 
-func encodeValue(v interface{}) (byte, []byte) {
-	switch x := v.(type) {
+func encodeValue(value interface{}) (byte, []byte) {
+	switch x := value.(type) {
 	case int64:
 		return 0, EncodeVarsizeInteger(x) // INTEGER
 
@@ -101,10 +101,10 @@ func encodeValue(v interface{}) (byte, []byte) {
 		return 0, EncodeVarsizeInteger(0)
 
 	case string:
-		b := EncodeVarsizeInteger(int64(len(x) + 1)) // len incl NUL
-		b = append(b, x...)
-		b = append(b, 0x00)
-		return 1, b
+		body := EncodeVarsizeInteger(int64(len(x) + 1)) // len incl NUL
+		body = append(body, x...)
+		body = append(body, 0x00)
+		return 1, body
 
 	case []byte:
 		return 2, append(EncodeVarsizeInteger(int64(len(x))), x...)
@@ -112,27 +112,30 @@ func encodeValue(v interface{}) (byte, []byte) {
 	case map[string]interface{}:
 		return 3, encodeStruct(x, false) // nested → terminator
 
+	case ArmedStruct: // polymorphic struct-list element: [arm][members][0x00]
+		return 3, append([]byte{x.Arm}, encodeStruct(x.Fields, false)...)
+
 	case []interface{}:
-		et, _ := encodeValue(x[0]) // homogeneous
-		body := []byte{et}
+		elemType, _ := encodeValue(x[0]) // homogeneous
+		body := []byte{elemType}
 		body = append(body, EncodeVarsizeInteger(int64(len(x)))...)
-		for _, e := range x {
-			_, eb := encodeValue(e)
-			body = append(body, eb...)
+		for _, elem := range x {
+			_, elemBody := encodeValue(elem)
+			body = append(body, elemBody...)
 		}
 		return 4, body
 
 	case map[interface{}]interface{}:
 		keys := sortedMapKeys(x)
-		kt, _ := encodeValue(keys[0])
-		vt, _ := encodeValue(x[keys[0]])
-		body := []byte{kt, vt}
+		keyType, _ := encodeValue(keys[0])
+		valType, _ := encodeValue(x[keys[0]])
+		body := []byte{keyType, valType}
 		body = append(body, EncodeVarsizeInteger(int64(len(x)))...)
-		for _, k := range keys {
-			_, kb := encodeValue(k)
-			body = append(body, kb...)
-			_, vb := encodeValue(x[k])
-			body = append(body, vb...)
+		for _, key := range keys {
+			_, keyBody := encodeValue(key)
+			body = append(body, keyBody...)
+			_, valBody := encodeValue(x[key])
+			body = append(body, valBody...)
 		}
 		return 5, body
 
@@ -141,21 +144,21 @@ func encodeValue(v interface{}) (byte, []byte) {
 		return 10, []byte{byte(bits >> 24), byte(bits >> 16), byte(bits >> 8), byte(bits)}
 
 	case ObjectType:
-		b := EncodeVarsizeInteger(int64(x.Component))
-		return 8, append(b, EncodeVarsizeInteger(int64(x.Type))...)
+		body := EncodeVarsizeInteger(int64(x.Component))
+		return 8, append(body, EncodeVarsizeInteger(int64(x.Type))...)
 
 	case ObjectID:
-		b := EncodeVarsizeInteger(int64(x.Component))
-		b = append(b, EncodeVarsizeInteger(int64(x.Type))...)
-		return 9, append(b, EncodeVarsizeInteger(x.ID)...)
+		body := EncodeVarsizeInteger(int64(x.Component))
+		body = append(body, EncodeVarsizeInteger(int64(x.Type))...)
+		return 9, append(body, EncodeVarsizeInteger(x.ID)...)
 
 	case Union:
 		body := []byte{x.ActiveMember}
-		if x.ActiveMember != 0xff {
+		if x.ActiveMember != 0xff && x.ActiveMember != 0x7f {
 			body = append(body, encodeTag(x.Field)...)
-			t, vb := encodeValue(x.Value)
-			body = append(body, t)
-			body = append(body, vb...)
+			typ, valBody := encodeValue(x.Value)
+			body = append(body, typ)
+			body = append(body, valBody...)
 		}
 		return 6, body
 
@@ -166,48 +169,48 @@ func encodeValue(v interface{}) (byte, []byte) {
 		body := []byte{0x01}
 		body = append(body, EncodeVarsizeInteger(int64(x.TdfID))...)
 		body = append(body, encodeTag(x.Field)...)
-		t, vb := encodeValue(x.Value)
-		body = append(body, t)
-		body = append(body, vb...)
+		typ, valBody := encodeValue(x.Value)
+		body = append(body, typ)
+		body = append(body, valBody...)
 		return 7, append(body, 0x00) // trailing terminator
 	}
 	return 0xff, nil
 }
 
 func encodeTag(tag string) []byte {
-	var t uint32
+	var packed uint32
 	for i := 0; i < len(tag) && i < 4; i++ {
-		c := tag[i]
-		if c >= 'a' && c <= 'z' {
-			c -= 0x20
+		char := tag[i]
+		if char >= 'a' && char <= 'z' {
+			char -= 0x20
 		} // uppercase
-		t |= uint32((c-0x20)&0x3f) << (26 - 6*i)
+		packed |= uint32((char-0x20)&0x3f) << (26 - 6*i)
 	}
-	return []byte{byte(t >> 24), byte(t >> 16), byte(t >> 8)}
+	return []byte{byte(packed >> 24), byte(packed >> 16), byte(packed >> 8)}
 }
 
-func EncodeVarsizeInteger(v int64) []byte {
-	neg := v < 0
-	u := uint64(v)
-	if neg {
-		u = uint64(-v)
+func EncodeVarsizeInteger(value int64) []byte {
+	negative := value < 0
+	remaining := uint64(value)
+	if negative {
+		remaining = uint64(-value)
 	}
-	first := byte(u & 0x3f)
-	u >>= 6
-	if neg {
-		first |= 0x40
+	firstByte := byte(remaining & 0x3f)
+	remaining >>= 6
+	if negative {
+		firstByte |= 0x40
 	}
-	if u > 0 {
-		first |= 0x80
+	if remaining > 0 {
+		firstByte |= 0x80
 	}
-	out := []byte{first}
-	for u > 0 {
-		b := byte(u & 0x7f)
-		u >>= 7
-		if u > 0 {
-			b |= 0x80
+	out := []byte{firstByte}
+	for remaining > 0 {
+		nextByte := byte(remaining & 0x7f)
+		remaining >>= 7
+		if remaining > 0 {
+			nextByte |= 0x80
 		}
-		out = append(out, b)
+		out = append(out, nextByte)
 	}
 	return out
 }
@@ -239,8 +242,8 @@ func EncodePacket(pkt *Packet) []byte {
 	return out
 }
 
-func isEmptyCollection(v interface{}) bool {
-	switch x := v.(type) {
+func isEmptyCollection(value interface{}) bool {
+	switch x := value.(type) {
 	case []interface{}:
 		return len(x) == 0
 	case map[interface{}]interface{}:
@@ -250,10 +253,10 @@ func isEmptyCollection(v interface{}) bool {
 	}
 }
 
-func coerce(typeCode byte, v interface{}) interface{} {
+func coerce(typeCode byte, value interface{}) interface{} {
 	switch typeCode {
 	case 0, 11:
-		switch n := v.(type) {
+		switch n := value.(type) {
 		case int:
 			return int64(n)
 		case int64:
@@ -269,5 +272,5 @@ func coerce(typeCode byte, v interface{}) interface{} {
 			return int64(0)
 		}
 	}
-	return v // string, []byte
+	return value // string, []byte
 }

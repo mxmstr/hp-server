@@ -200,7 +200,7 @@ func readValue(typ byte, buf []byte) (interface{}, int) {
 		active := buf[0]
 		off := 1
 		union := Union{ActiveMember: active}
-		if active != 0xff { // 0xff == INVALID_MEMBER_INDEX
+		if active != 0xff && active != 0x7f { // 0xff / 0x7f == INVALID_MEMBER_INDEX
 			tag, value, bytesRead := readElement(buf[off:])
 			if bytesRead < 0 {
 				return nil, -1

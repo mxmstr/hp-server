@@ -39,7 +39,12 @@ type Variable struct {
 	Value interface{}
 } // also used for GENERIC
 
+type ArmedStruct struct {
+	Arm    uint8
+	Fields map[string]interface{}
+}
+
 type Encoder struct {
 	header Header
-	stack  []map[string]interface{} // stack[0] = root payload; top = current open struct
+	stack  []map[string]interface{}
 }

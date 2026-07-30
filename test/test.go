@@ -1,9 +1,10 @@
 package main
 
 import (
-	"blazeSDK"
 	"encoding/hex"
 	"fmt"
+
+	blazeSDK "github.com/Khysnik/BlazeSDK"
 )
 
 func main() {
