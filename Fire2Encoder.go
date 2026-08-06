@@ -125,10 +125,19 @@ func encodeValue(value interface{}) (byte, []byte) {
 		}
 		return 4, body
 
+	case TypedList: // list with an explicit element type — encodes even when empty
+		body := []byte{x.ElemType}
+		body = append(body, EncodeVarsizeInteger(int64(len(x.Items)))...)
+		for _, elem := range x.Items {
+			_, elemBody := encodeValue(elem)
+			body = append(body, elemBody...)
+		}
+		return 4, body
+
 	case map[interface{}]interface{}:
 		keys := sortedMapKeys(x)
 		keyType, _ := encodeValue(keys[0])
-		valType, _ := encodeValue(x[keys[0]])
+		valType := leafType(x[keys[0]]) // EA: map valType = leaf element type
 		body := []byte{keyType, valType}
 		body = append(body, EncodeVarsizeInteger(int64(len(x)))...)
 		for _, key := range keys {
@@ -177,6 +186,50 @@ func encodeValue(value interface{}) (byte, []byte) {
 	return 0xff, nil
 }
 
+func typeByte(value interface{}) byte {
+	switch value.(type) {
+	case int64, bool:
+		return 0
+	case string:
+		return 1
+	case []byte:
+		return 2
+	case map[string]interface{}, ArmedStruct:
+		return 3
+	case []interface{}, TypedList:
+		return 4
+	case map[interface{}]interface{}:
+		return 5
+	case Union:
+		return 6
+	case Variable:
+		return 7
+	case ObjectType:
+		return 8
+	case ObjectID:
+		return 9
+	case float32:
+		return 10
+	}
+	return 0xff
+}
+
+func leafType(value interface{}) byte {
+	switch x := value.(type) {
+	case []interface{}:
+		if len(x) > 0 {
+			return leafType(x[0])
+		}
+		return 3
+	case map[interface{}]interface{}:
+		for _, v := range x {
+			return leafType(v)
+		}
+		return 3
+	}
+	return typeByte(value)
+}
+
 func encodeTag(tag string) []byte {
 	var packed uint32
 	for i := 0; i < len(tag) && i < 4; i++ {
@@ -187,6 +240,15 @@ func encodeTag(tag string) []byte {
 		packed |= uint32((char-0x20)&0x3f) << (26 - 6*i)
 	}
 	return []byte{byte(packed >> 24), byte(packed >> 16), byte(packed >> 8)}
+}
+
+func BuildMetadata(cntx, errc int64) []byte {
+	out := append(encodeTag("CNTX"), 0) // INTEGER
+	out = append(out, EncodeVarsizeInteger(cntx)...)
+	out = append(out, encodeTag("ERRC")...)
+	out = append(out, 0)
+	out = append(out, EncodeVarsizeInteger(errc)...)
+	return out
 }
 
 func EncodeVarsizeInteger(value int64) []byte {

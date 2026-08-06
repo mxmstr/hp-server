@@ -2,7 +2,6 @@ package blazeSDK
 
 import (
 	"encoding/binary"
-	"fmt"
 )
 
 /*
@@ -60,10 +59,9 @@ blaze component IDs
 7802: UserSessions
 */
 
-// Fire2Decoder - Parses a Fire2 packet and returns a decoded *Packet object
-func Fire2Decoder(buffer []byte, debugLog bool) *Packet {
+func Fire2Decoder(buffer []byte) (*Packet, string) {
 	if len(buffer) < 16 { //
-		return nil
+		return nil, ""
 	}
 
 	var header []byte
@@ -105,6 +103,8 @@ func Fire2Decoder(buffer []byte, debugLog bool) *Packet {
 		blazeErr = &BlazeError{Component: ComponentIDValue, Code: errCode}
 	}
 
+	rawPayload := buffer
+
 	var payload map[string]interface{}
 	if len(buffer) != 0 {
 		var n int
@@ -112,12 +112,6 @@ func Fire2Decoder(buffer []byte, debugLog bool) *Packet {
 		if n < 0 {
 			payload = nil // some shit happened, return a nil payload instead of a partial payload
 		}
-	}
-
-	if debugLog {
-		fmt.Print("Payload = ")
-		writeValue(payload, 0)
-		fmt.Println()
 	}
 
 	return &Packet{
@@ -131,10 +125,37 @@ func Fire2Decoder(buffer []byte, debugLog bool) *Packet {
 			UserIndex:     UserIndexValue,
 			Options:       options[0],
 		},
-		Payload:  payload,
-		Metadata: metadata,
-		Error:    blazeErr,
+		Payload:    payload,
+		Metadata:   metadata,
+		RawPayload: rawPayload,
+		Error:      blazeErr,
+	}, formatPayload(payload)
+}
+
+func FindTagInt(raw []byte, tag string) (int64, bool) {
+	t := encodeTag(tag)
+	for i := 0; i+4 <= len(raw); i++ {
+		if raw[i] == t[0] && raw[i+1] == t[1] && raw[i+2] == t[2] && raw[i+3] == 0 {
+			v, n := DecodeVarsizeInteger(raw[i+4:])
+			if n > 0 {
+				return v, true
+			}
+		}
 	}
+	return 0, false
+}
+
+func BuildRawFrame(comp, cmd uint16, msgType uint8, msgNum uint32, payload []byte) []byte {
+	out := make([]byte, 16+len(payload))
+	binary.BigEndian.PutUint32(out[0:4], uint32(len(payload)))
+	binary.BigEndian.PutUint16(out[6:8], comp)
+	binary.BigEndian.PutUint16(out[8:10], cmd)
+	out[10] = byte(msgNum >> 16)
+	out[11] = byte(msgNum >> 8)
+	out[12] = byte(msgNum)
+	out[13] = msgType << 5
+	copy(out[16:], payload)
+	return out
 }
 
 func Fire2Encoder(component, command uint16, msgType uint8) *Encoder {

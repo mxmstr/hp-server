@@ -1,10 +1,11 @@
 package blazeSDK
 
 type Packet struct {
-	Header   Header
-	Payload  map[string]interface{}
-	Metadata map[string]interface{}
-	Error    *BlazeError
+	Header     Header
+	Payload    map[string]interface{}
+	Metadata   map[string]interface{}
+	RawPayload []byte // undecoded payload bytes (for fields a generic decode can't reach)
+	Error      *BlazeError
 }
 
 type Header struct {
@@ -42,6 +43,11 @@ type Variable struct {
 type ArmedStruct struct {
 	Arm    uint8
 	Fields map[string]interface{}
+}
+
+type TypedList struct {
+	ElemType byte
+	Items    []interface{}
 }
 
 type Encoder struct {

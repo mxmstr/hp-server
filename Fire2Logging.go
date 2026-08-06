@@ -6,40 +6,47 @@ import (
 	"strings"
 )
 
-// writeValue - prints a formatted log of the TDF payload
-func writeValue(payload interface{}, indent int) {
+func formatPayload(payload interface{}) string {
+	var sb strings.Builder
+	sb.WriteString("BlazePayload ")
+	writeValue(&sb, payload, 0)
+	return sb.String()
+}
+
+// writeValue - appends a formatted rendering of one TDF value to sb
+func writeValue(sb *strings.Builder, payload interface{}, indent int) {
 	pad := strings.Repeat("  ", indent)
 	switch payloadType := payload.(type) {
 
 	case map[string]interface{}: // struct (TDF)
-		fmt.Print("{\n")
+		sb.WriteString("{\n")
 		for _, key := range sortedKeys(payloadType) {
-			fmt.Printf("%s  %s = ", pad, key)
-			writeValue(payloadType[key], indent+1)
-			fmt.Println()
+			fmt.Fprintf(sb, "%s  %s = ", pad, key)
+			writeValue(sb, payloadType[key], indent+1)
+			sb.WriteString("\n")
 		}
-		fmt.Printf("%s}", pad)
+		fmt.Fprintf(sb, "%s}", pad)
 
 	case []interface{}: // list
-		fmt.Print("[\n")
+		sb.WriteString("[\n")
 		for i, key := range payloadType {
-			fmt.Printf("%s  [%d] = ", pad, i)
-			writeValue(key, indent+1)
-			fmt.Println()
+			fmt.Fprintf(sb, "%s  [%d] = ", pad, i)
+			writeValue(sb, key, indent+1)
+			sb.WriteString("\n")
 		}
-		fmt.Printf("%s]", pad)
+		fmt.Fprintf(sb, "%s]", pad)
 
 	case map[interface{}]interface{}: // map
-		fmt.Print("[\n")
+		sb.WriteString("[\n")
 		for _, key := range sortedMapKeys(payloadType) {
-			fmt.Printf("%s  (%s, ", pad, scalar(key))
-			writeValue(payloadType[key], indent+1)
-			fmt.Print(")\n")
+			fmt.Fprintf(sb, "%s  (%s, ", pad, scalar(key))
+			writeValue(sb, payloadType[key], indent+1)
+			sb.WriteString(")\n")
 		}
-		fmt.Printf("%s]", pad)
+		fmt.Fprintf(sb, "%s]", pad)
 
 	default: // scalar
-		fmt.Print(scalar(payload))
+		sb.WriteString(scalar(payload))
 	}
 }
 
