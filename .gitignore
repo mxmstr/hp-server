@@ -1,1 +1,5 @@
 .idea
+.gocache/
+.gomodcache/
+bin/
+hpserver.exe

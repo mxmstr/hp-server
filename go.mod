@@ -1,3 +1,3 @@
-module github.com/Khysnik/BlazeSDK
+module github.com/local/reorigin-hotpursuit
 
-go 1.26
+go 1.25

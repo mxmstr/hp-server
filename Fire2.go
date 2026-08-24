@@ -158,6 +158,11 @@ func BuildRawFrame(comp, cmd uint16, msgType uint8, msgNum uint32, payload []byt
 	return out
 }
 
+// DecodeTDF exposes the shared TDF decoder for legacy FIRE transports.
+func DecodeTDF(buffer []byte) (map[string]interface{}, int) {
+	return readStruct(buffer)
+}
+
 func Fire2Encoder(component, command uint16, msgType uint8) *Encoder {
 	return &Encoder{
 		header: Header{ComponentID: component, CommandID: command, MessageType: msgType},

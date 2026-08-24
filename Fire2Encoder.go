@@ -304,6 +304,11 @@ func EncodePacket(pkt *Packet) []byte {
 	return out
 }
 
+// EncodeTDF exposes the shared TDF encoder without a FIRE2 header.
+func EncodeTDF(fields map[string]interface{}) []byte {
+	return encodeStruct(fields, true)
+}
+
 func isEmptyCollection(value interface{}) bool {
 	switch x := value.(type) {
 	case []interface{}:

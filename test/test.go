@@ -4,7 +4,7 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	blazeSDK "github.com/Khysnik/BlazeSDK"
+	blazeSDK "github.com/local/reorigin-hotpursuit"
 )
 
 func main() {

@@ -130,7 +130,23 @@ func readValue(typ byte, buf []byte) (interface{}, int) {
 		off := 1 + bytesRead
 		list := make([]interface{}, 0, count)
 		for i := 0; i < int(count); i++ {
-			value, bytesRead2 := readValue(elemType, buf[off:])
+			var value interface{}
+			var bytesRead2 int
+			// Lists of polymorphic TDF structs prefix each element with its
+			// concrete arm. NetworkAddress lists use this form (arm 2 is an
+			// IpPairAddress), while ordinary struct-list elements begin directly
+			// with a packed tag whose first byte is always >= 0x80.
+			if elemType == 3 && off < len(buf) && buf[off] != 0 && buf[off] < 0x80 {
+				arm := buf[off]
+				fields, structBytes := readStruct(buf[off+1:])
+				if structBytes < 0 {
+					return nil, -1
+				}
+				value = ArmedStruct{Arm: arm, Fields: fields}
+				bytesRead2 = 1 + structBytes
+			} else {
+				value, bytesRead2 = readValue(elemType, buf[off:])
+			}
 			if bytesRead2 < 0 {
 				return nil, -1
 			}
