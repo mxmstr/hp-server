@@ -108,6 +108,7 @@ func AutologHandler(logger *slog.Logger) http.Handler {
 			w.Header().Set("Content-Type", "application/octet-stream")
 			w.WriteHeader(http.StatusOK)
 		}
+
 	})
 
 }

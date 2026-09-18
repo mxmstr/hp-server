@@ -165,6 +165,32 @@ func TestSilentLoginReturnsSyntheticFullLoginResponse(t *testing.T) {
 	}
 }
 
+func TestSilentLoginUsesPersonaNameFromPatchToken(t *testing.T) {
+	s := New(nil)
+	session := &Session{}
+	req := &legacyfire.Frame{
+		Header: legacyfire.Header{Component: ComponentAuthentication, Command: CommandSilentLogin, MessageID: 7},
+		TDF: map[string]interface{}{
+			"PID":  int64(7),
+			"PCTK": "LOCAL-PC-TOKEN|PNAM=Interceptor",
+		},
+	}
+
+	reply, err := s.Handlers[key(ComponentAuthentication, CommandSilentLogin)](context.Background(), session, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, consumed := blaze.DecodeTDF(reply.Payload)
+	if consumed < 0 {
+		t.Fatalf("invalid reply payload: %x", reply.Payload)
+	}
+	sess := decoded["SESS"].(map[string]interface{})
+	persona := sess["PDTL"].(map[string]interface{})
+	if session.Persona != "Interceptor" || persona["DSNM"] != "Interceptor" {
+		t.Fatalf("session=%+v PDTL=%#v", session, persona)
+	}
+}
+
 func TestRedirectorConnectionDoesNotConsumeAuthenticatedIdentity(t *testing.T) {
 	s := New(nil)
 	redirector := s.newSession(&net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 50000})
@@ -529,6 +555,28 @@ func TestQuickMatchJoinsCompatibleRegisteredLobby(t *testing.T) {
 	}
 	if joiner.PendingMatchmakingGame != 0 {
 		t.Fatalf("joiner pending game=%d after completion", joiner.PendingMatchmakingGame)
+	}
+}
+
+func TestQuickMatchJoinsInterceptorLobbyBelowRequestedMaxCapacity(t *testing.T) {
+	s := New(nil)
+	host := &Session{AccountID: 1, PersonaID: 1, SessionID: 1, Persona: "Player", outbound: make(chan outboundFrame, 8)}
+	joiner := &Session{AccountID: 2, PersonaID: 2, SessionID: 2, Persona: "Player2", outbound: make(chan outboundFrame, 8)}
+	game := newGame(7, host, []*Session{host}, map[interface{}]interface{}{
+		"cartier": "1", "playlist": "529914",
+	}, 2, 130, 1)
+	s.games[game.ID] = game
+
+	// The captured Interceptor host has two public slots, but the retail
+	// quick-match request describes eight as its maximum accepted capacity.
+	req := &legacyfire.Frame{TDF: map[string]interface{}{
+		"ATTR": map[interface{}]interface{}{"cartier": "1", "playlist": "529914"},
+		"NTOP": int64(132), "PMAX": int64(8),
+	}}
+	msid := s.queueMatch(joiner, req)
+
+	if msid == 0 || joiner.GameID != game.ID || len(game.Members) != 2 || len(s.matchQueue) != 0 {
+		t.Fatalf("msid=%d game=%d members=%d queue=%d", msid, joiner.GameID, len(game.Members), len(s.matchQueue))
 	}
 }
 
@@ -1035,6 +1083,62 @@ func TestRepeatedMatchmakingReplacesQueuedRequestWithoutSelfMatch(t *testing.T) 
 	}
 }
 
+func TestCancelMatchmakingRemovesOnlyCallersCapturedRequest(t *testing.T) {
+	s := New(nil)
+	requester := &Session{PersonaID: 1, SessionID: 101, Persona: "Player", QueuedMatchID: 2}
+	other := &Session{PersonaID: 2, SessionID: 102, Persona: "Player2", QueuedMatchID: 3}
+	s.matchQueue = []*matchRequest{
+		{session: requester, msid: 2},
+		{session: other, msid: 3},
+	}
+	req, err := legacyfire.Read(bytes.NewReader(mustHex(
+		"00050004000e00000000001d" +
+			"b73a640002")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.TDF["MSID"] != int64(2) {
+		t.Fatalf("captured cancel TDF=%#v", req.TDF)
+	}
+
+	reply, err := s.Handlers[key(ComponentGameManager, CommandCancelMatchmaking)](
+		context.Background(), requester, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply.Header.MessageType != legacyfire.MessageReply || reply.Header.Error != 0 ||
+		reply.Header.MessageID != 29 || len(reply.Payload) != 0 {
+		t.Fatalf("reply header=%+v payload=%x", reply.Header, reply.Payload)
+	}
+	if requester.QueuedMatchID != 0 || len(s.matchQueue) != 1 ||
+		s.matchQueue[0].session != other || s.matchQueue[0].msid != 3 ||
+		other.QueuedMatchID != 3 {
+		t.Fatalf("queue=%#v requester=%+v other=%+v", s.matchQueue, requester, other)
+	}
+}
+
+func TestCancelMatchmakingIgnoresStaleOrAlreadyMatchedID(t *testing.T) {
+	s := New(nil)
+	queued := &Session{PersonaID: 1, SessionID: 101, QueuedMatchID: 4}
+	s.matchQueue = []*matchRequest{{session: queued, msid: 4}}
+	if s.cancelQueuedMatch(queued, 3) {
+		t.Fatal("stale matchmaking ID was cancelled")
+	}
+	if queued.QueuedMatchID != 4 || len(s.matchQueue) != 1 {
+		t.Fatalf("stale cancel mutated queue=%#v session=%+v", s.matchQueue, queued)
+	}
+
+	matched := &Session{PersonaID: 2, SessionID: 102, GameID: 7, PendingMatchmakingGame: 7}
+	game := newGame(7, matched, []*Session{matched}, map[interface{}]interface{}{}, 8, 130, 1)
+	s.games[7] = game
+	if s.cancelQueuedMatch(matched, 4) {
+		t.Fatal("already-matched session reported queued cancellation")
+	}
+	if matched.GameID != 7 || matched.PendingMatchmakingGame != 7 || s.games[7] != game {
+		t.Fatalf("matched cancel mutated game/session: game=%#v session=%+v", s.games[7], matched)
+	}
+}
+
 func TestCapacityOneRequestsDoNotCreateInvalidPair(t *testing.T) {
 	s := New(nil)
 	req := &legacyfire.Frame{TDF: map[string]interface{}{
@@ -1388,6 +1492,90 @@ func TestSubmitOfflineGameReportAcknowledgesCapturedRequest(t *testing.T) {
 	}
 }
 
+func TestSubmitOnlineGameReportAcknowledgesCapturedRequest(t *testing.T) {
+	s := New(nil)
+	req, err := legacyfire.Read(bytes.NewReader(mustHex(
+		"0229001c0001000000000027" +
+			"9aece80000c32db40700cb0cb4039e1b650701a4fcf290169e1b6503932a7605000301018b3d2d00058b5cf400008e387200008e3d6c00028e4bb400008e8c2d00018e8c3700008e9bad00018e9bb700008eda6c00008edc2c00018edc2d00028edc3500008f2bab00018f2ce800008f3a2d00058f3c2c00018f3c2d00028f3c3500008f4a6d0000926d240000926d2d0000929cf4000092da6c0000933d240000933d2d00a6d213a23d2c0001a23d2d0001a23d350000aadcac0001aadcad0002aadcb50000ba98ad000aba9d220000ba9d2d00809f49bada730000badced0032beda6c0000bee8e40000bee8ed00bbf603ca18ed0001ca18f70000ca2aec0001ca2aed0002ca2af50000ca38720000ca3c2d0002ca3c370000ca3d6c0005ca7b240000ca8c2d0001ca8c370000ca9bad0001ca9bb70000cada6c0000cadc2c0001cadc2d0001cadc350000cb2bab0001cb3c2c0001cb3c2d0002cb3c350000cb4a6d00bff120ce39240000ce392d00af7dce88f40000cecc2d00a0ee6dd2ea740000d2fba30000d2fbac0000d2fbb20000d2fd300000d2fd3400bff120d328ac0001d328ad0002d328b50000d33b300000d33c2d00a0cf24d34cf00000da5cb3000100ca3c800500030101874b7000018aed39008e9501976bb400a4cb2f9b2cf40000b29cf400b5d740c22cf40000d29b650081ae06da58c000b4b60ede9b8000010000009f2a6400019f4e70011870757273756974726163655f6d756c7469706c617965720000")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(req.Payload) != 553 || req.TDF["FNSH"] != int64(0) {
+		t.Fatalf("payload=%d TDF=%#v", len(req.Payload), req.TDF)
+	}
+	report, ok := req.TDF["RPRT"].(map[string]interface{})
+	if !ok || report["GRID"] != int64(1) || report["GTYP"] != "pursuitrace_multiplayer" {
+		t.Fatalf("RPRT=%#v", req.TDF["RPRT"])
+	}
+	game, ok := report["GAME"].(blaze.Variable)
+	if !ok || game.Field != "GAME" {
+		t.Fatalf("GAME=%#v", report["GAME"])
+	}
+
+	got, err := s.Handlers[key(ComponentGameReporting, CommandSubmitGameReport)](
+		context.Background(), &Session{AccountID: 1, SessionID: 1}, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Header.MessageType != legacyfire.MessageReply || got.Header.Error != 0 ||
+		got.Header.MessageID != 39 || len(got.Payload) != 0 {
+		t.Fatalf("header=%+v payload=%x", got.Header, got.Payload)
+	}
+}
+
+func TestGetBestScoresReturnsEmptyTypedScoreList(t *testing.T) {
+	s := New(nil)
+	req, err := legacyfire.Read(bytes.NewReader(mustHex(
+		"01510801000b00000000001d" +
+			"8aca640003ca5c7304030a976bb400a09c27d39c2501055261636500d69ba60000da5d39000200" +
+			"976bb40080ef45d39c2501115261636572507572737569745261636500d69ba60001da5d39000200" +
+			"976bb400a5f045d39c25010a526f616452756c657300d69ba60002da5d39000200" +
+			"976bb400acf045d39c2501055261636500d69ba60003da5d39000200" +
+			"976bb40082ef45d39c2501115261636572507572737569745261636500d69ba60004da5d39000200" +
+			"976bb400a4f045d39c25010a526f616452756c657300d69ba60005da5d39000200" +
+			"976bb400a19c27d39c2501055261636500d69ba60006da5d39000200" +
+			"976bb40081ed45d39c2501055261636500d69ba60007da5d39000200" +
+			"976bb400999c27d39c2501055261636500d69ba60008da5d39000200" +
+			"976bb40088ef45d39c2501115261636572507572737569745261636500d69ba60009da5d39000200")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.TDF["BLID"] != int64(3) {
+		t.Fatalf("BLID=%#v", req.TDF["BLID"])
+	}
+	requests, ok := req.TDF["REQS"].([]interface{})
+	if !ok || len(requests) != 10 {
+		t.Fatalf("REQS=%#v", req.TDF["REQS"])
+	}
+	first, ok := requests[0].(map[string]interface{})
+	if !ok || first["EVNT"] != int64(321312) || first["TYPE"] != "Race" ||
+		first["UINF"] != int64(0) || first["VETY"] != int64(2) {
+		t.Fatalf("first request=%#v", requests[0])
+	}
+
+	got, err := s.Handlers[key(ComponentAutolog, CommandGetBestScores)](
+		context.Background(), &Session{PersonaID: 3, SessionID: 3}, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Header.MessageType != legacyfire.MessageReply || got.Header.Error != 0 ||
+		got.Header.MessageID != 29 {
+		t.Fatalf("header=%+v payload=%x", got.Header, got.Payload)
+	}
+	want := mustHex("ce3cb3040300") // SCRS, list<struct>, zero elements
+	if !bytes.Equal(got.Payload, want) {
+		t.Fatalf("payload=%x want=%x", got.Payload, want)
+	}
+	decoded, consumed := blaze.DecodeTDF(got.Payload)
+	if consumed != len(got.Payload) {
+		t.Fatalf("consumed=%d payload=%x", consumed, got.Payload)
+	}
+	scores, ok := decoded["SCRS"].([]interface{})
+	if !ok || len(scores) != 0 {
+		t.Fatalf("SCRS=%#v", decoded["SCRS"])
+	}
+}
+
 func TestResetDedicatedServerReturnsAssignedGameID(t *testing.T) {
 	req, err := legacyfire.Read(bytes.NewReader(mustHex(
 		"00d000040019000000000010" +
@@ -1533,6 +1721,49 @@ func TestAdvanceGameStateAcknowledgesAndBroadcastsState(t *testing.T) {
 	stateTDF, consumed := blaze.DecodeTDF(state.Payload)
 	if consumed != len(state.Payload) || stateTDF["GID"] != int64(1) || stateTDF["GSTA"] != int64(130) {
 		t.Fatalf("consumed=%d payload=%x TDF=%#v", consumed, state.Payload, stateTDF)
+	}
+}
+
+func TestReplayGameAcknowledgesAndReturnsRosterToPreGame(t *testing.T) {
+	req, err := legacyfire.Read(bytes.NewReader(mustHex(
+		"000500040013000000000032" +
+			"9e99000001")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.TDF["GID"] != int64(1) {
+		t.Fatalf("request TDF=%#v", req.TDF)
+	}
+
+	s := New(nil)
+	host := &Session{PersonaID: 1, SessionID: 11, GameID: 1}
+	joiner := &Session{PersonaID: 2, SessionID: 12, GameID: 1}
+	game := newGame(1, host, []*Session{host, joiner}, nil, 8, 130, 4)
+	s.games[1] = game
+
+	got, err := s.Handlers[key(ComponentGameManager, CommandReplayGame)](
+		context.Background(), host, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Header.MessageType != legacyfire.MessageReply || got.Header.Error != 0 || got.Header.MessageID != 50 || len(got.Payload) != 0 {
+		t.Fatalf("header=%+v payload=%x", got.Header, got.Payload)
+	}
+	if game.State != 130 {
+		t.Fatalf("game state=%d", game.State)
+	}
+	for _, session := range []*Session{host, joiner} {
+		if len(session.Notifications) != 1 {
+			t.Fatalf("session %d notifications=%d", session.SessionID, len(session.Notifications))
+		}
+		note := session.Notifications[0]
+		if note.Header.Component != ComponentGameManager || note.Header.Command != NotifyGameState || note.Header.MessageType != legacyfire.MessageNotify {
+			t.Fatalf("state header=%+v", note.Header)
+		}
+		stateTDF, consumed := blaze.DecodeTDF(note.Payload)
+		if consumed != len(note.Payload) || stateTDF["GID"] != int64(1) || stateTDF["GSTA"] != int64(130) {
+			t.Fatalf("consumed=%d payload=%x TDF=%#v", consumed, note.Payload, stateTDF)
+		}
 	}
 }
 
